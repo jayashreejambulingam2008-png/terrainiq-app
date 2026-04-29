@@ -70,9 +70,7 @@ class Hexagon:
         self.height = random.uniform(0, 1.5)
         self.locked = False
         self.dump_count = 0
-        self.id = f"H{lan
-
-e_id}-{col_id}"
+        self.id = f"H{lane_id}-{col_id}"  # FIXED: Correct f-string syntax
 
     def get_color(self):
         if self.height >= 2.4:
@@ -97,6 +95,7 @@ class Truck:
         self.loads = 0
         self.current_path = []
         self.path_progress = 0
+        self.waypoints = []
 
     def update(self, hexes, stats):
         if self.status == "IDLE":
@@ -122,24 +121,25 @@ class Truck:
         elif self.status == "HAULING":
             self.progress += 0.025
             
-            if self.progress < 0.33:
-                t = self.progress / 0.33
-                p1 = self.waypoints[0]
-                p2 = self.waypoints[1]
-                self.x = p1[0] + (p2[0] - p1[0]) * t
-                self.y = p1[1] + (p2[1] - p1[1]) * t
-            elif self.progress < 0.66:
-                t = (self.progress - 0.33) / 0.33
-                p1 = self.waypoints[1]
-                p2 = self.waypoints[2]
-                self.x = p1[0] + (p2[0] - p1[0]) * t
-                self.y = p1[1] + (p2[1] - p1[1]) * t
-            else:
-                t = (self.progress - 0.66) / 0.34
-                p1 = self.waypoints[2]
-                p2 = self.waypoints[3]
-                self.x = p1[0] + (p2[0] - p1[0]) * t
-                self.y = p1[1] + (p2[1] - p1[1]) * t
+            if len(self.waypoints) >= 4:
+                if self.progress < 0.33:
+                    t = self.progress / 0.33
+                    p1 = self.waypoints[0]
+                    p2 = self.waypoints[1]
+                    self.x = p1[0] + (p2[0] - p1[0]) * t
+                    self.y = p1[1] + (p2[1] - p1[1]) * t
+                elif self.progress < 0.66:
+                    t = (self.progress - 0.33) / 0.33
+                    p1 = self.waypoints[1]
+                    p2 = self.waypoints[2]
+                    self.x = p1[0] + (p2[0] - p1[0]) * t
+                    self.y = p1[1] + (p2[1] - p1[1]) * t
+                else:
+                    t = (self.progress - 0.66) / 0.34
+                    p1 = self.waypoints[2]
+                    p2 = self.waypoints[3]
+                    self.x = p1[0] + (p2[0] - p1[0]) * t
+                    self.y = p1[1] + (p2[1] - p1[1]) * t
             
             if self.progress >= 1:
                 self.target.height = min(2.5, self.target.height + 0.7)
@@ -154,24 +154,25 @@ class Truck:
         elif self.status == "RETURNING":
             self.progress += 0.035
             
-            if self.progress < 0.33:
-                t = self.progress / 0.33
-                p1 = self.waypoints[3]
-                p2 = self.waypoints[2]
-                self.x = p1[0] + (p2[0] - p1[0]) * t
-                self.y = p1[1] + (p2[1] - p1[1]) * t
-            elif self.progress < 0.66:
-                t = (self.progress - 0.33) / 0.33
-                p1 = self.waypoints[2]
-                p2 = self.waypoints[1]
-                self.x = p1[0] + (p2[0] - p1[0]) * t
-                self.y = p1[1] + (p2[1] - p1[1]) * t
-            else:
-                t = (self.progress - 0.66) / 0.34
-                p1 = self.waypoints[1]
-                p2 = self.waypoints[0]
-                self.x = p1[0] + (p2[0] - p1[0]) * t
-                self.y = p1[1] + (p2[1] - p1[1]) * t
+            if len(self.waypoints) >= 4:
+                if self.progress < 0.33:
+                    t = self.progress / 0.33
+                    p1 = self.waypoints[3]
+                    p2 = self.waypoints[2]
+                    self.x = p1[0] + (p2[0] - p1[0]) * t
+                    self.y = p1[1] + (p2[1] - p1[1]) * t
+                elif self.progress < 0.66:
+                    t = (self.progress - 0.33) / 0.33
+                    p1 = self.waypoints[2]
+                    p2 = self.waypoints[1]
+                    self.x = p1[0] + (p2[0] - p1[0]) * t
+                    self.y = p1[1] + (p2[1] - p1[1]) * t
+                else:
+                    t = (self.progress - 0.66) / 0.34
+                    p1 = self.waypoints[1]
+                    p2 = self.waypoints[0]
+                    self.x = p1[0] + (p2[0] - p1[0]) * t
+                    self.y = p1[1] + (p2[1] - p1[1]) * t
             
             if self.progress >= 1:
                 self.status = "IDLE"
@@ -437,15 +438,9 @@ def main():
                     else:
                         status_display = '⚪ IDLE'
                     
-                    # FIXED: Safe access to target attributes
                     target_info = '-'
-                    if truck.target:
-                        if hasattr(truck.target, 'x'):
-                            target_info = f"X:{truck.target.x:.0f}"
-                        elif hasattr(truck.target, 'id'):
-                            target_info = truck.target.id
-                        else:
-                            target_info = str(truck.target)[:8]
+                    if truck.target and hasattr(truck.target, 'x'):
+                        target_info = f"X:{truck.target.x:.0f}"
                     
                     fleet_data.append({
                         'TRUCK': truck.id,
