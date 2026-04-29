@@ -1,429 +1,367 @@
-import streamlit as st
-import plotly.graph_objects as go
-import pandas as pd
-import numpy as np
+import pygame
+import math
 import random
-import time
-from datetime import datetime
 
-st.set_page_config(page_title="CAT Autonomous Command", layout="wide", page_icon="🚛")
+# --- Config ---
+WIDTH, HEIGHT = 1200, 800
+SIDEBAR = 250
+HEX_RADIUS = 10  # Slightly smaller to fit more hexes
+FPS = 60
+TRUCK_CAPACITY = 400
 
-# Custom CSS to match CAT styling
-st.markdown("""
-<style>
-    .stApp {
-        background: linear-gradient(135deg, #1a1a1a 0%, #000000 100%);
-    }
-    .cat-header {
-        background: #ffcd00;
-        padding: 15px 30px;
-        border-radius: 5px;
-        margin-bottom: 20px;
-        color: #000;
-    }
-    .cat-header h1 {
-        margin: 0;
-        font-family: 'Arial Black', sans-serif;
-        display: inline-block;
-    }
-    .stat-box {
-        background: #000;
-        border-left: 4px solid #ffcd00;
-        padding: 15px;
-        margin: 10px 0;
-        border-radius: 5px;
-    }
-    .stat-label {
-        font-size: 0.7rem;
-        color: #ffcd00;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-    .stat-value {
-        font-size: 1.8rem;
-        font-weight: bold;
-        font-family: monospace;
-    }
-    .control-panel {
-        background: #1a1a1a;
-        padding: 20px;
-        border-radius: 10px;
-        border: 1px solid #333;
-    }
-    .legend {
-        background: rgba(0,0,0,0.8);
-        padding: 10px;
-        border-radius: 5px;
-        font-size: 0.7rem;
-    }
-</style>
-""", unsafe_allow_html=True)
+# Colors
+COLORS = {
+    "yellow": (255, 205, 0),
+    "black": (0, 0, 0),
+    "dark": (26, 26, 26),
+    "gray": (51, 51, 51),
+    "empty": (0, 204, 68),
+    "filling": (0, 85, 255),
+    "full": (204, 0, 0),
+    "text": (255, 255, 255),
+    "red": (200, 0, 0),
+    "green": (0, 200, 0)
+}
 
-# ============ SIMULATION CLASS ============
-class CATSimulation:
-    def __init__(self):
-        self.hexes = []
-        self.trucks = []
-        self.is_running = False
-        self.total_tons = 0
-        self.hex_radius = 13
+# --- Truck Class ---
+class Truck:
+    def __init__(self, start_pos, lane_id, truck_id):
+        self.start_x, self.start_y = start_pos
+        self.x, self.y = start_pos
+        self.lane = lane_id
+        self.status = "IDLE"
+        self.progress = 0
+        self.target = None
+        self.id = truck_id
+        self.route = []
+        self.wait_cycles = 0
     
-    def initialize_site(self, yard_width, yard_length, num_trucks):
-        """Initialize the dumpyard with hex grid and trucks"""
-        self.is_running = False
-        self.total_tons = 0
-        
-        hex_width = np.sqrt(3) * self.hex_radius
-        vert_spacing = (2 * self.hex_radius) * 0.75
-        
-        cols = int(yard_width / hex_width)
-        rows = int(yard_length / vert_spacing)
-        
-        self.hexes = []
-        for r in range(rows):
-            lane_id = int(r / (rows / max(1, num_trucks)))
-            for c in range(cols):
-                x_offset = hex_width / 2 if r % 2 == 1 else 0
-                self.hexes.append({
-                    'id': f"R{r}-C{c}",
-                    'x': c * hex_width + x_offset + 90,
-                    'y': r * vert_spacing + 30,
-                    'height': random.uniform(0, 2.0),
-                    'locked': False,
-                    'lane_id': lane_id
-                })
-        
-        # Create trucks
-        lanes = list(set([h['lane_id'] for h in self.hexes]))
-        self.trucks = []
-        for i, lane_id in enumerate(lanes[:num_trucks]):
-            lane_hexes = [h for h in self.hexes if h['lane_id'] == lane_id]
+    def update(self, hexes, stats):
+        if self.status == "IDLE":
+            # Find available hex in lane
+            lane_hexes = [h for h in hexes if h["lane"] == self.lane and not h["locked"] and h["height"] < 2.4]
             if lane_hexes:
-                avg_y = sum(h['y'] for h in lane_hexes) / len(lane_hexes)
-                self.trucks.append({
-                    'id': f'CAT-797F-{i+1}',
-                    'start_x': 30,
-                    'start_y': avg_y,
-                    'x': 30,
-                    'y': avg_y,
-                    'status': 'IDLE',
-                    'progress': 0,
-                    'my_lane': lane_id,
-                    'target': None,
-                    'route': []
-                })
+                # Pick the lowest height hex for efficiency (not just farthest)
+                lane_hexes.sort(key=lambda h: h["height"])
+                self.target = lane_hexes[0]
+                self.target["locked"] = True
+                
+                # Create smoother path
+                mid_x = self.start_x + (self.target["x"] - self.start_x) * 0.4
+                self.route = [
+                    (self.start_x, self.start_y),
+                    (mid_x, self.start_y),
+                    (self.target["x"], self.target["y"])
+                ]
+                self.progress = 0
+                self.status = "HAULING"
         
-        return True
-    
-    def get_lowest_hex_in_lane(self, lane_id):
-        """Find lowest unfilled hex in specific lane"""
-        available = [h for h in self.hexes if h['lane_id'] == lane_id and not h['locked'] and h['height'] < 2.4]
-        if available:
-            return min(available, key=lambda x: x['height'])
-        return None
-    
-    def update_simulation(self):
-        """Update simulation state - called in loop"""
-        if not self.is_running:
-            return
-        
-        # Check if all hexes are filled
-        if all(h['height'] >= 2.4 for h in self.hexes):
-            self.is_running = False
-            return
-        
-        for truck in self.trucks:
-            if truck['status'] == 'IDLE':
-                # Find target in truck's lane
-                target = self.get_lowest_hex_in_lane(truck['my_lane'])
-                if target:
-                    target['locked'] = True
-                    truck['status'] = 'HAULING'
-                    truck['target'] = target
-                    truck['progress'] = 0
-                    # Create route: start -> vertical move -> horizontal to target
-                    truck['route'] = [
-                        [truck['start_x'], truck['start_y']],
-                        [truck['start_x'], target['y']],
-                        [target['x'], target['y']]
-                    ]
+        elif self.status in ["HAULING", "RETURNING"]:
+            speed = 0.008 if self.status == "HAULING" else 0.015
+            self.progress += speed
             
-            elif truck['status'] in ['HAULING', 'RETURNING']:
-                speed = 0.018 if truck['status'] == 'HAULING' else 0.03
-                truck['progress'] += speed
-                
-                if truck['status'] == 'HAULING':
-                    p_start = truck['route'][0]
-                    p_mid = truck['route'][1]
-                    p_end = truck['route'][2]
+            if len(self.route) >= 3:
+                p0, p1, p2 = self.route
+                if self.progress < 0.5:
+                    s = self.progress * 2
+                    self.x = p0[0] + (p1[0] - p0[0]) * s
+                    self.y = p0[1] + (p1[1] - p0[1]) * s
                 else:
-                    p_start = truck['route'][2]
-                    p_mid = truck['route'][1]
-                    p_end = truck['route'][0]
+                    s = (self.progress - 0.5) * 2
+                    self.x = p1[0] + (p2[0] - p1[0]) * s
+                    self.y = p1[1] + (p2[1] - p1[1]) * s
                 
-                # Interpolate position
-                if truck['progress'] < 0.5:
-                    s = truck['progress'] * 2
-                    truck['x'] = p_start[0] + (p_mid[0] - p_start[0]) * s
-                    truck['y'] = p_start[1] + (p_mid[1] - p_start[1]) * s
-                else:
-                    s = (truck['progress'] - 0.5) * 2
-                    truck['x'] = p_mid[0] + (p_end[0] - p_mid[0]) * s
-                    truck['y'] = p_mid[1] + (p_end[1] - p_mid[1]) * s
-                
-                if truck['progress'] >= 1:
-                    if truck['status'] == 'HAULING':
-                        # Dump material
-                        truck['target']['height'] += 0.8
-                        truck['target']['locked'] = False
-                        truck['status'] = 'RETURNING'
-                        truck['progress'] = 0
-                        self.total_tons += 400
+                if self.progress >= 1:
+                    if self.status == "HAULING":
+                        # Add more realistic fill increment
+                        fill_amount = 0.6 + random.uniform(0, 0.4)
+                        self.target["height"] = min(2.5, self.target["height"] + fill_amount)
+                        self.target["locked"] = False
+                        stats["tons"] += TRUCK_CAPACITY
+                        stats["dumps"] += 1
+                        self.status = "RETURNING"
+                        self.progress = 0
                     else:
-                        # Return to idle position
-                        truck['status'] = 'IDLE'
-                        truck['x'] = truck['start_x']
-                        truck['y'] = truck['start_y']
-                        truck['target'] = None
-    
-    def get_color_for_height(self, height):
-        """Get color based on fill height"""
-        if height >= 2.4:
-            return '#cc0000'  # Full
-        elif height > 0.8:
-            return '#0055ff'  # Filling
-        else:
-            return '#00cc44'  # Empty
+                        self.status = "IDLE"
+                        self.x, self.y = self.start_x, self.start_y
+                        self.target = None
 
-# ============ MAIN APP ============
+# --- Draw Hex ---
+def draw_hex(screen, color, x, y):
+    points = []
+    for i in range(6):
+        angle = math.radians(60 * i - 30)
+        px = x + HEX_RADIUS * math.cos(angle)
+        py = y + HEX_RADIUS * math.sin(angle)
+        points.append((px, py))
+    pygame.draw.polygon(screen, color, points)
+    pygame.draw.polygon(screen, (0, 0, 0), points, 1)
+
+# --- Draw Button ---
+def draw_button(screen, text, x, y, w, h, color, hover=False):
+    mouse = pygame.mouse.get_pos()
+    click = pygame.mouse.get_pressed()
+    
+    rect = pygame.Rect(x, y, w, h)
+    btn_color = color if not rect.collidepoint(mouse) else (min(color[0]+30,255), min(color[1]+30,255), min(color[2]+30,255))
+    pygame.draw.rect(screen, btn_color, rect)
+    pygame.draw.rect(screen, COLORS["black"], rect, 2)
+    
+    font = pygame.font.SysFont("Arial", 14)
+    text_surf = font.render(text, True, COLORS["black"])
+    screen.blit(text_surf, (x + w//2 - text_surf.get_width()//2, y + h//2 - text_surf.get_height()//2))
+    
+    if rect.collidepoint(mouse) and click[0]:
+        return True
+    return False
+
+# --- Main ---
 def main():
-    # Initialize session state
-    if 'sim' not in st.session_state:
-        st.session_state.sim = CATSimulation()
-    if 'initialized' not in st.session_state:
-        st.session_state.initialized = False
-    if 'auto_refresh' not in st.session_state:
-        st.session_state.auto_refresh = False
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("CAT Command Center - Heavy Fleet Edition")
+    clock = pygame.time.Clock()
+    font = pygame.font.SysFont("Arial", 14)
+    title_font = pygame.font.SysFont("Arial", 18, bold=True)
     
-    # CAT Header
-    st.markdown("""
-    <div class="cat-header">
-        <h1>CATERPILLAR ®</h1>
-        <span style="float: right; background: #000; color: #ffcd00; padding: 5px 10px; border-radius: 3px;">
-            AUTONOMOUS COMMAND CENTER | V10.5
-        </span>
-    </div>
-    """, unsafe_allow_html=True)
+    # Default values
+    num_trucks = 25
+    yard_width = 400
+    yard_height = 300
     
-    # Sidebar and Main Layout
-    col_side, col_main = st.columns([1, 3])
+    # Simulation state
+    sim_active = False
+    hexes = []
+    trucks = []
+    stats = {"tons": 0, "dumps": 0}
     
-    with col_side:
-        st.markdown('<div class="control-panel">', unsafe_allow_html=True)
-        
-        # Status Box
-        status_text = "🟢 OPERATING" if st.session_state.auto_refresh else "⚪ STANDBY"
-        if st.session_state.initialized and st.session_state.sim.is_running:
-            status_text = "🔥 HAULING ACTIVE"
-        elif st.session_state.initialized and not st.session_state.auto_refresh:
-            status_text = "⏸️ PAUSED"
-        
-        st.markdown(f"""
-        <div class="stat-box">
-            <div class="stat-label">Fleet Status</div>
-            <div class="stat-value">{status_text}</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Tonnage Box
-        tons_moved = st.session_state.sim.total_tons if st.session_state.initialized else 0
-        st.markdown(f"""
-        <div class="stat-box">
-            <div class="stat-label">Material Moved (Tons)</div>
-            <div class="stat-value">{tons_moved:,.0f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.divider()
-        
-        # Controls
-        st.subheader("🏗️ Site Configuration")
-        
-        yard_width = st.number_input("Site Width (M)", min_value=100, max_value=500, value=240, step=10)
-        yard_length = st.number_input("Site Length (M)", min_value=100, max_value=400, value=160, step=10)
-        num_trucks = st.number_input("Active CAT 797F Units", min_value=1, max_value=12, value=4, step=1)
-        
-        col_btn1, col_btn2 = st.columns(2)
-        
-        with col_btn1:
-            if st.button("🚛 BEGIN OPERATIONS", type="primary", use_container_width=True):
-                with st.spinner("Initializing site..."):
-                    st.session_state.sim.initialize_site(yard_width, yard_length, num_trucks)
-                    st.session_state.initialized = True
-                    st.session_state.auto_refresh = True
-                    st.session_state.sim.is_running = True
-                    st.rerun()
-        
-        with col_btn2:
-            if st.button("⏹️ HALT FLEET", use_container_width=True):
-                st.session_state.auto_refresh = False
-                st.session_state.sim.is_running = False
-        
-        if st.button("🔄 RESET TERRAIN", use_container_width=True):
-            st.session_state.initialized = False
-            st.session_state.sim = CATSimulation()
-            st.session_state.auto_refresh = False
-            st.rerun()
-        
-        st.markdown("---")
-        st.caption("🔒 SECURED BY TEAM SILENT HACKER")
-        
-        # Legend
-        st.markdown("""
-        <div class="legend">
-            <div><span style="background:#cc0000; width:12px; height:12px; display:inline-block;"></span> Full Grade (>2.4m)</div>
-            <div><span style="background:#0055ff; width:12px; height:12px; display:inline-block;"></span> Filling (0.8-2.4m)</div>
-            <div><span style="background:#00cc44; width:12px; height:12px; display:inline-block;"></span> Empty (&lt;0.8m)</div>
-            <div><span style="border:1px dashed #ffcd00; width:12px; height:12px; display:inline-block;"></span> Safety Zone</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
+    # Input boxes for configuration
+    input_active = None
+    input_text_trucks = "25"
+    input_text_width = "400"
+    input_text_height = "300"
     
-    with col_main:
-        # Map Container
-        st.markdown("""
-        <div style="background: radial-gradient(circle, #222 0%, #000 100%); border-radius: 10px; padding: 10px;">
-        """, unsafe_allow_html=True)
+    def create_site():
+        nonlocal hexes, trucks, stats
+        hexes = []
+        trucks = []
+        stats = {"tons": 0, "dumps": 0}
         
-        # Create plot
-        if st.session_state.initialized and st.session_state.sim.hexes:
-            # Update simulation if running
-            if st.session_state.auto_refresh:
-                st.session_state.sim.update_simulation()
-            
-            # Create figure
-            fig = go.Figure()
-            
-            # Add safety zone line
-            fig.add_shape(
-                type='line',
-                x0=70, y0=-10, x1=70, y1=st.session_state.sim.hexes[-1]['y'] + 50 if st.session_state.sim.hexes else 300,
-                line=dict(color='#ffcd00', width=2, dash='dash')
-            )
-            
-            # Add hexagons
-            for hex_cell in st.session_state.sim.hexes:
-                # Calculate hexagon vertices
-                cx, cy = hex_cell['x'], hex_cell['y']
-                radius = 12
-                angles = np.linspace(0, 2*np.pi, 7)
-                x_verts = [cx + radius * np.cos(a) for a in angles]
-                y_verts = [cy + radius * np.sin(a) for a in angles]
-                
-                color = st.session_state.sim.get_color_for_height(hex_cell['height'])
-                
-                fig.add_trace(go.Scatter(
-                    x=x_verts,
-                    y=y_verts,
-                    mode='lines',
-                    fill='toself',
-                    fillcolor=color,
-                    line=dict(color='#000', width=1),
-                    showlegend=False,
-                    hoverinfo='text',
-                    hovertext=f"Height: {hex_cell['height']:.2f}m<br>Locked: {hex_cell['locked']}"
-                ))
-            
-            # Add trucks
-            for truck in st.session_state.sim.trucks:
-                fig.add_trace(go.Scatter(
-                    x=[truck['x']],
-                    y=[truck['y']],
-                    mode='markers+text',
-                    marker=dict(
-                        symbol='square',
-                        size=25,
-                        color='#ffcd00',
-                        line=dict(color='#000', width=2)
-                    ),
-                    text=['CAT'],
-                    textfont=dict(color='#000', size=9, family='Arial Black'),
-                    textposition='middle center',
-                    showlegend=False,
-                    hoverinfo='text',
-                    hovertext=f"{truck['id']}<br>Status: {truck['status']}"
-                ))
-            
-            # Layout
-            fig.update_layout(
-                xaxis=dict(
-                    range=[-10, st.session_state.sim.hexes[-1]['x'] + 50] if st.session_state.sim.hexes else [-10, 400],
-                    showgrid=False,
-                    zeroline=False,
-                    fixedrange=True
-                ),
-                yaxis=dict(
-                    range=[-10, st.session_state.sim.hexes[-1]['y'] + 50] if st.session_state.sim.hexes else [-10, 300],
-                    showgrid=False,
-                    zeroline=False,
-                    fixedrange=True,
-                    scaleanchor='x'
-                ),
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)',
-                margin=dict(l=0, r=0, t=0, b=0),
-                height=700
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Truck status table
-            st.subheader("🚛 Fleet Status")
-            fleet_data = []
-            for truck in st.session_state.sim.trucks:
-                fleet_data.append({
-                    'Truck ID': truck['id'],
-                    'Status': '🟡 Hauling' if truck['status'] == 'HAULING' else ('🟢 Returning' if truck['status'] == 'RETURNING' else '⚪ Idle'),
-                    'Position': f"({truck['x']:.0f}, {truck['y']:.0f})",
-                    'Target': truck['target']['id'] if truck['target'] else 'None'
+        hex_w = math.sqrt(3) * HEX_RADIUS
+        vert = HEX_RADIUS * 1.5
+        
+        available_width = WIDTH - SIDEBAR - 50
+        available_height = HEIGHT - 100
+        
+        cols = min(int(available_width / hex_w), 35)
+        rows = min(int(available_height / vert), 25)
+        
+        lanes = max(1, num_trucks // 2)  # Distribute trucks across lanes
+        
+        for r in range(rows):
+            lane_id = r % lanes if lanes > 0 else 0
+            for c in range(cols):
+                offset = hex_w / 2 if r % 2 else 0
+                hexes.append({
+                    "x": SIDEBAR + c * hex_w + offset + 30,
+                    "y": r * vert + 50,
+                    "height": random.uniform(0, 1.5),
+                    "locked": False,
+                    "lane": lane_id,
+                    "row": r,
+                    "col": c
                 })
-            
-            st.dataframe(pd.DataFrame(fleet_data), use_container_width=True, hide_index=True)
-            
-            # Progress stats
-            filled = len([h for h in st.session_state.sim.hexes if h['height'] >= 2.4])
-            total = len(st.session_state.sim.hexes)
-            progress = (filled / total) * 100 if total > 0 else 0
-            
-            st.progress(progress / 100)
-            st.caption(f"Site Fill Progress: {filled}/{total} zones complete ({progress:.1f}%)")
-            
-        else:
-            st.info("👈 Click 'BEGIN OPERATIONS' to start the simulation")
-            
-            # Placeholder map
-            fig = go.Figure()
-            fig.add_annotation(
-                text="CAT Autonomous Command Center<br>Click 'Begin Operations' to Start",
-                x=0.5, y=0.5, xref='paper', yref='paper',
-                showarrow=False, font=dict(size=20, color='#ffcd00')
-            )
-            fig.update_layout(
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)',
-                height=500,
-                xaxis=dict(visible=False),
-                yaxis=dict(visible=False)
-            )
-            st.plotly_chart(fig, use_container_width=True)
         
-        st.markdown("</div>", unsafe_allow_html=True)
+        # Create truck entry points spread across left side
+        truck_spacing = available_height / max(1, num_trucks)
+        for i in range(num_trucks):
+            lane_id = i % lanes
+            start_y = 80 + (i * truck_spacing)
+            start_y = min(start_y, HEIGHT - 80)
+            trucks.append(Truck((SIDEBAR - 15, start_y), lane_id, f"CAT-{i+1:03d}"))
     
-    # Auto-refresh for real-time updates
-    if st.session_state.auto_refresh and st.session_state.initialized and st.session_state.sim.is_running:
-        time.sleep(0.5)
-        st.rerun()
+    # Initial create
+    create_site()
+    
+    # Button positions
+    start_btn = pygame.Rect(20, 200, 200, 40)
+    stop_btn = pygame.Rect(20, 250, 200, 40)
+    reset_btn = pygame.Rect(20, 300, 200, 40)
+    
+    running = True
+    while running:
+        screen.fill(COLORS["black"])
+        
+        # Draw sidebar
+        pygame.draw.rect(screen, COLORS["dark"], (0, 0, SIDEBAR, HEIGHT))
+        
+        # Title
+        title = title_font.render("CAT AUTONOMOUS", True, COLORS["yellow"])
+        screen.blit(title, (20, 20))
+        sub = font.render("COMMAND CENTER", True, COLORS["yellow"])
+        screen.blit(sub, (20, 45))
+        
+        # Status
+        status_color = COLORS["green"] if sim_active else COLORS["red"]
+        status_text = font.render(f"STATUS: {'ACTIVE' if sim_active else 'STANDBY'}", True, status_color)
+        screen.blit(status_text, (20, 85))
+        
+        # Stats
+        tons_text = font.render(f"TONS: {stats['tons']:,}", True, COLORS["yellow"])
+        screen.blit(tons_text, (20, 120))
+        dumps_text = font.render(f"DUMPS: {stats['dumps']}", True, COLORS["yellow"])
+        screen.blit(dumps_text, (20, 140))
+        trucks_text = font.render(f"TRUCKS: {len(trucks)}", True, COLORS["yellow"])
+        screen.blit(trucks_text, (20, 160))
+        
+        # Input labels
+        config_label = font.render("CONFIGURATION", True, COLORS["yellow"])
+        screen.blit(config_label, (20, 320))
+        
+        # Trucks input
+        pygame.draw.rect(screen, COLORS["gray"], (20, 345, 100, 30))
+        pygame.draw.rect(screen, COLORS["black"], (20, 345, 100, 30), 1)
+        trucks_input_display = font.render(input_text_trucks, True, COLORS["yellow"])
+        screen.blit(trucks_input_display, (25, 350))
+        trucks_label = font.render("Trucks (25-50):", True, COLORS["text"])
+        screen.blit(trucks_label, (20, 335))
+        
+        # Width input
+        pygame.draw.rect(screen, COLORS["gray"], (130, 345, 80, 30))
+        pygame.draw.rect(screen, COLORS["black"], (130, 345, 80, 30), 1)
+        width_input_display = font.render(input_text_width, True, COLORS["yellow"])
+        screen.blit(width_input_display, (135, 350))
+        width_label = font.render("Width (m):", True, COLORS["text"])
+        screen.blit(width_label, (130, 335))
+        
+        # Height input
+        pygame.draw.rect(screen, COLORS["gray"], (20, 400, 80, 30))
+        pygame.draw.rect(screen, COLORS["black"], (20, 400, 80, 30), 1)
+        height_input_display = font.render(input_text_height, True, COLORS["yellow"])
+
+        screen.blit(height_input_display, (25, 405))
+        height_label = font.render("Height (m):", True, COLORS["text"])
+        screen.blit(height_label, (20, 390))
+
+        # Update button
+        if draw_button(screen, "UPDATE SITE", 20, 450, 200, 35, COLORS["yellow"]):
+            try:
+                new_trucks = int(input_text_trucks) if input_text_trucks else 25
+                new_trucks = max(25, min(50, new_trucks))  # Allow 25-50 trucks
+                num_trucks = new_trucks
+                yard_width = int(input_text_width) if input_text_width else 400
+                yard_height = int(input_text_height) if input_text_height else 300
+                create_site()
+                sim_active = False
+            except:
+                pass
+        
+        # Buttons
+        if draw_button(screen, "START OPERATIONS", 20, 500, 200, 40, COLORS["yellow"]):
+            sim_active = True
+        
+        if draw_button(screen, "HALT FLEET", 20, 550, 200, 40, COLORS["red"]):
+            sim_active = False
+        
+        if draw_button(screen, "RESET SITE", 20, 600, 200, 40, COLORS["gray"]):
+            sim_active = False
+            create_site()
+        
+        # Input handling
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                # Check which input box was clicked
+                if pygame.Rect(20, 345, 100, 30).collidepoint(event.pos):
+                    input_active = "trucks"
+                elif pygame.Rect(130, 345, 80, 30).collidepoint(event.pos):
+                    input_active = "width"
+                elif pygame.Rect(20, 400, 80, 30).collidepoint(event.pos):
+                    input_active = "height"
+                else:
+                    input_active = None
+            
+            elif event.type == pygame.KEYDOWN and input_active:
+                if event.key == pygame.K_RETURN:
+                    input_active = None
+                elif event.key == pygame.K_BACKSPACE:
+                    if input_active == "trucks":
+                        input_text_trucks = input_text_trucks[:-1]
+                    elif input_active == "width":
+                        input_text_width = input_text_width[:-1]
+                    elif input_active == "height":
+                        input_text_height = input_text_height[:-1]
+                else:
+                    if event.unicode.isdigit():
+                        if input_active == "trucks":
+                            input_text_trucks += event.unicode
+                        elif input_active == "width":
+                            input_text_width += event.unicode
+                        elif input_active == "height":
+                            input_text_height += event.unicode
+        
+        # Update simulation
+        if sim_active:
+            for truck in trucks:
+                truck.update(hexes, stats)
+            
+            # Check if all hexes are filled
+            if all(h["height"] >= 2.4 for h in hexes):
+                sim_active = False
+        
+        # Draw hex grid
+        for h in hexes:
+            color = COLORS["empty"]
+            if h["height"] > 0.8:
+                color = COLORS["filling"]
+            if h["height"] >= 2.4:
+                color = COLORS["full"]
+            if h["locked"]:
+                color = COLORS["gray"]
+            draw_hex(screen, color, h["x"], h["y"])
+        
+        # Draw trucks
+        for truck in trucks:
+            # Draw truck body
+            pygame.draw.rect(screen, COLORS["yellow"], (truck.x-12, truck.y-12, 24, 24))
+            pygame.draw.rect(screen, COLORS["black"], (truck.x-12, truck.y-12, 24, 24), 2)
+            
+            # Draw truck ID
+            id_font = pygame.font.SysFont("Arial", 8)
+            id_text = id_font.render(str(truck.id.split('-')[1]), True, COLORS["black"])
+            screen.blit(id_text, (truck.x-6, truck.y-4))
+            
+            # Status indicator
+            status_color = COLORS["green"] if truck.status == "HAULING" else (COLORS["yellow"] if truck.status == "RETURNING" else COLORS["gray"])
+            pygame.draw.circle(screen, status_color, (int(truck.x), int(truck.y-15)), 4)
+        
+        # Draw legend
+        legend_y = HEIGHT - 100
+        legend_items = [
+            ("Empty", COLORS["empty"]),
+            ("Filling", COLORS["filling"]),
+            ("Full", COLORS["full"]),
+            ("Locked", COLORS["gray"]),
+            ("Truck", COLORS["yellow"])
+        ]
+        
+        for i, (label, color) in enumerate(legend_items):
+            x = SIDEBAR + 10 + (i * 100)
+            pygame.draw.rect(screen, color, (x, legend_y, 15, 15))
+            pygame.draw.rect(screen, COLORS["black"], (x, legend_y, 15, 15), 1)
+            legend_text = font.render(label, True, COLORS["text"])
+            screen.blit(legend_text, (x + 20, legend_y))
+        
+        # FPS display
+        fps_text = font.render(f"FPS: {int(clock.get_fps())}", True, COLORS["gray"])
+        screen.blit(fps_text, (WIDTH - 80, 10))
+        
+        pygame.display.flip()
+        clock.tick(FPS)
+    
+    pygame.quit()
 
 if __name__ == "__main__":
     main()
