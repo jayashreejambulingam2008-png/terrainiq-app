@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import random
 import math
+import time
 from datetime import datetime
 
 st.set_page_config(page_title="CAT Autonomous Command", layout="wide", page_icon="🚛")
@@ -256,6 +257,7 @@ def create_map_figure(hexes, trucks):
     
     # Layout
     fig.update_layout(
+        uirevision='constant', # <--- THIS FIXES THE BLINKING!
         xaxis=dict(
             showgrid=False, zeroline=False,
             fixedrange=True, showticklabels=False,
@@ -423,8 +425,10 @@ def main():
                     for truck in st.session_state.trucks:
                         truck.update(st.session_state.hexes, st.session_state.stats)
             
-            # CREATE AND DISPLAY MAP - NO RERUN NEEDED
+            # CREATE AND DISPLAY MAP
             fig = create_map_figure(st.session_state.hexes, st.session_state.trucks)
+            
+            # Using an empty placeholder keeps layout structure stable between frames
             plot_placeholder = st.empty()
             plot_placeholder.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
             
@@ -464,10 +468,8 @@ def main():
             
             st.caption(f"🔄 LIVE UPDATES | All trucks active | Trucks targeting RIGHTMOST empty hexes")
             
-            # AUTO-UPDATE WITHOUT RERUN - Using JavaScript interval
+            # AUTO-UPDATE
             if st.session_state.sim_active:
-                # Use meta refresh for smooth updates (no visible blink)
-                import time
                 time.sleep(0.1)
                 st.rerun()
                 
