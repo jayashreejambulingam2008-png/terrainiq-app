@@ -5,10 +5,9 @@ import numpy as np
 import math
 import time
 
-# [Keep your existing imports and Setup here]
+# --- PAGE CONFIG ---
 st.set_page_config(page_title="CAT Autonomous Command", layout="wide", page_icon="🚛")
 
-# [Keep your CSS here]
 st.markdown("""
 <style>
     .stApp { background: linear-gradient(135deg, #1a1a1a 0%, #000000 100%); }
@@ -22,7 +21,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# [Keep your classes (Hexagon, Truck) exactly the same as before]
+# --- CLASSES ---
 class Hexagon:
     def __init__(self, x, y, lane_id, col_id):
         self.x = x; self.y = y; self.lane_id = lane_id; self.col_id = col_id; self.height = 0.0; self.locked = False; self.dump_count = 0; self.id = f"H{lane_id}-{col_id}"
@@ -55,10 +54,8 @@ class Truck:
             if self.progress >= 1.0:
                 self.target.height = min(2.5, self.target.height + 0.6); self.target.locked = False; self.target.dump_count += 1; self.status = "RETURNING"; self.progress = 0.0; stats['tonnage'] += 400; stats['dumps'] += 1; self.loads += 1
                 self.waypoints = [(self.target.x, self.target.y), (self.target.x - self.turning_radius, self.target.y), (self.start_x, self.target.y), (self.start_x, self.start_y)]
-            # (Movement logic omitted for brevity in response, keep your original movement math here)
             else:
                  t = self.progress / 0.33 if self.progress < 0.33 else ((self.progress - 0.33)/0.33 if self.progress < 0.66 else (self.progress - 0.66)/0.34)
-                 # Apply movement updates as per original code
         elif self.status == "RETURNING":
             self.progress += 0.025
             if self.progress >= 1.0: self.status = "IDLE"; self.x = self.start_x; self.y = self.start_y; self.target = None
@@ -68,46 +65,62 @@ class Truck:
         elif self.status == "RETURNING": return '#ffcd00'
         return '#555555'
 
-# [Keep your create_map_figure function exactly as it is]
+# --- HELPERS ---
 def create_map_figure(hexes, trucks):
-    # (Existing Figure Generation Logic)
     fig = go.Figure()
-    # ... (Your full Figure generation code) ...
+    for hex_cell in hexes:
+        points = []
+        for i in range(6):
+            angle_rad = math.radians(60 * i + 30)
+            points.append((hex_cell.x + 14 * math.cos(angle_rad), hex_cell.y + 14 * math.sin(angle_rad)))
+        color = hex_cell.get_color() if not hex_cell.locked else '#555555'
+        fig.add_trace(go.Scatter(x=[p[0] for p in points], y=[p[1] for p in points], mode='lines', fill='toself', fillcolor=color, line=dict(color='#333', width=1), showlegend=False))
+    
+    for truck in trucks:
+        fig.add_trace(go.Scatter(x=[truck.x], y=[truck.y], mode='markers', marker=dict(symbol='square', size=28, color='#ffcd00', line=dict(color=truck.get_status_color(), width=3)), showlegend=False))
+    
+    fig.update_layout(xaxis=dict(showgrid=False, fixedrange=True, showticklabels=False, range=[200, 950]), yaxis=dict(showgrid=False, fixedrange=True, showticklabels=False, range=[0, 650]), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', margin=dict(l=0, r=0, t=0, b=0), height=680)
     return fig
 
-# ============ MAIN APP ============
+# --- MAIN ---
 def main():
-    # [Initialization Logic]
     if 'initialized' not in st.session_state: st.session_state.initialized = False
     if 'sim_active' not in st.session_state: st.session_state.sim_active = False
 
-    # ... (Sidebar Config Logic) ...
-    # [Start Live / Stop / Reset Buttons]
+    st.markdown('<div class="cat-header"><h1>CATERPILLAR ®</h1></div>', unsafe_allow_html=True)
+    
+    col_side, col_main = st.columns([1, 3])
+    
+    with col_side:
+        st.markdown('<div class="control-panel">', unsafe_allow_html=True)
+        if st.button("🚀 START LIVE", type="primary"):
+            hex_radius = 15; hex_width = math.sqrt(3) * hex_radius; vert_spacing = (2 * hex_radius) * 0.75
+            hexes = [Hexagon(280 + c * hex_width + ((hex_width/2) if r % 2 == 1 else 0), 80 + r * vert_spacing, r // 3, 20-c) for r in range(14) for c in range(20)]
+            st.session_state.hexes = hexes
+            st.session_state.trucks = [Truck(i + 1, 250, 200 + (i * 30), i % 3) for i in range(6)]
+            st.session_state.stats = {'tonnage': 0, 'dumps': 0}
+            st.session_state.initialized = True
+            st.session_state.sim_active = True
+        if st.button("🔄 RESET"):
+            st.session_state.initialized = False
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
     with col_main:
         if st.session_state.initialized:
-            
-            # --- THE MAGIC FIX IS HERE ---
             @st.fragment(run_every=0.15)
-            def live_simulation_view():
+            def live_view():
                 if st.session_state.sim_active:
-                    for _ in range(2):
-                        for truck in st.session_state.trucks:
-                            truck.update(st.session_state.hexes, st.session_state.trucks, st.session_state.stats)
+                    for truck in st.session_state.trucks:
+                        truck.update(st.session_state.hexes, st.session_state.trucks, st.session_state.stats)
                 
-                # 1. Create the figure object
                 fig = create_map_figure(st.session_state.hexes, st.session_state.trucks)
-                
-                # 2. Convert to STATIC image
-                # This prevents the browser from reloading the HTML iframe
-                img_bytes = fig.to_image(format="png", width=1000, height=680)
-                
-                # 3. Display as a simple image instead of a chart
-                st.image(img_bytes, use_container_width=True)
-                
-                # [Fleet status table and other widgets]
+                # Using static image rendering to stop the blinking
+                st.image(fig.to_image(format="png", width=1000, height=680), use_container_width=True)
             
-            live_simulation_view()
+            live_view()
+        else:
+            st.info("Click 'START LIVE' to begin.")
 
 if __name__ == "__main__":
     main()
