@@ -65,10 +65,6 @@ st.markdown("""
     div.stButton > button:hover {
         background-color: #e5b800;
     }
-    .stPlotlyChart {
-        background: radial-gradient(circle, #222 0%, #000 100%);
-        border-radius: 10px;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -80,57 +76,76 @@ class CATSimulation:
         self.is_running = False
         self.total_tons = 0
         self.total_dumps = 0
-        self.hex_radius = 10
-        self.last_update = datetime.now()
+        self.hex_radius = 14  # Slightly larger for better visibility
     
     def initialize_site(self, yard_width, yard_length, num_trucks):
-        """Initialize the dumpyard with hex grid and trucks"""
+        """Initialize the dumpyard with perfectly packed hex grid"""
         self.is_running = False
         self.total_tons = 0
         self.total_dumps = 0
         
-        hex_width = math.sqrt(3) * self.hex_radius
-        vert_spacing = self.hex_radius * 1.5
+        # Hexagon geometry - PERFECT PACKING FORMULAS
+        # Width of a hexagon (flat-to-flat) = 2 * radius
+        # Horizontal distance between centers = sqrt(3) * radius
+        # Vertical distance between centers = 1.5 * radius (for pointy-top orientation)
         
-        # Calculate grid size based on yard dimensions
-        cols = max(15, min(35, int(yard_width / hex_width)))
-        rows = max(10, min(25, int(yard_length / vert_spacing)))
+        hex_width = self.hex_radius * 2  # Width of hexagon
+        hex_horiz_spacing = math.sqrt(3) * self.hex_radius  # Distance between centers horizontally
+        hex_vert_spacing = self.hex_radius * 1.5  # Distance between centers vertically (for staggered rows)
+        
+        # Calculate how many hexes fit in the yard
+        # Add padding for sidebar (250px) + margin
+        available_width = yard_width + 250
+        available_height = yard_length + 100
+        
+        cols = int(available_width / hex_horiz_spacing) + 2
+        rows = int(available_height / hex_vert_spacing) + 2
         
         # Distribute trucks across lanes
         lanes = max(1, min(num_trucks, 12))
         
         self.hexes = []
+        hex_id = 0
+        
         for r in range(rows):
+            # Stagger every other row
+            x_offset = hex_horiz_spacing / 2 if r % 2 == 1 else 0
             lane_id = r % lanes
+            
             for c in range(cols):
-                x_offset = hex_width / 2 if r % 2 == 1 else 0
-                x_pos = 280 + c * hex_width + x_offset
-                y_pos = r * vert_spacing + 50
+                # Calculate center position with perfect packing
+                x = 250 + c * hex_horiz_spacing + x_offset
+                y = 50 + r * hex_vert_spacing
                 
-                self.hexes.append({
-                    'id': f"{r}-{c}",
-                    'x': x_pos,
-                    'y': y_pos,
-                    'height': random.uniform(0, 1.5),
-                    'locked': False,
-                    'lane_id': lane_id,
-                    'dump_count': 0
-                })
+                # Only add if within visible area
+                if x < available_width + 100 and y < available_height + 100:
+                    self.hexes.append({
+                        'id': hex_id,
+                        'x': x,
+                        'y': y,
+                        'height': random.uniform(0, 1.5),
+                        'locked': False,
+                        'lane_id': lane_id,
+                        'dump_count': 0,
+                        'row': r,
+                        'col': c
+                    })
+                    hex_id += 1
         
-        # Create trucks
+        # Create trucks - spread them along the left side
         self.trucks = []
-        truck_spacing = min(50, yard_length / max(1, num_trucks))
+        truck_spacing = max(40, available_height / max(1, num_trucks))
         
-        for i in range(num_trucks):
+        for i in range(min(num_trucks, len(self.hexes))):
             lane_id = i % lanes
-            start_y = 70 + (i * truck_spacing)
-            start_y = min(start_y, yard_length + 30)
+            start_y = 60 + (i * truck_spacing)
+            start_y = min(start_y, yard_length + 50)
             
             self.trucks.append({
                 'id': f'CAT-{i+1:03d}',
-                'start_x': 230,
+                'start_x': 210,
                 'start_y': start_y,
-                'x': 230,
+                'x': 210,
                 'y': start_y,
                 'status': 'IDLE',
                 'progress': 0,
@@ -168,6 +183,7 @@ class CATSimulation:
                     truck['target'] = target
                     truck['progress'] = 0
                     
+                    # Create route
                     mid_x = truck['start_x'] + (target['x'] - truck['start_x']) * 0.3
                     truck['route'] = [
                         [truck['start_x'], truck['start_y']],
@@ -176,7 +192,7 @@ class CATSimulation:
                     ]
             
             elif truck['status'] in ['HAULING', 'RETURNING']:
-                speed = 0.02 if truck['status'] == 'HAULING' else 0.03
+                speed = 0.025 if truck['status'] == 'HAULING' else 0.035
                 truck['progress'] += speed
                 
                 if len(truck['route']) >= 3:
@@ -215,11 +231,22 @@ class CATSimulation:
     
     def get_color_for_height(self, height):
         if height >= 2.4:
-            return '#cc0000'
+            return '#cc0000'  # Full
         elif height > 0.8:
-            return '#0055ff'
+            return '#0055ff'  # Filling
         else:
-            return '#00cc44'
+            return '#00cc44'  # Empty
+    
+    def get_hex_vertices(self, cx, cy, radius):
+        """Calculate the 6 vertices of a hexagon (pointy-top orientation)"""
+        vertices = []
+        for i in range(6):
+            angle_deg = 60 * i - 30  # Rotate for pointy-top orientation
+            angle_rad = math.radians(angle_deg)
+            x = cx + radius * math.cos(angle_rad)
+            y = cy + radius * math.sin(angle_rad)
+            vertices.append((x, y))
+        return vertices
 
 # ============ MAIN APP ============
 def main():
@@ -228,8 +255,6 @@ def main():
         st.session_state.sim = CATSimulation()
     if 'initialized' not in st.session_state:
         st.session_state.initialized = False
-    if 'simulation_step' not in st.session_state:
-        st.session_state.simulation_step = 0
     
     # CAT Header
     st.markdown("""
@@ -288,8 +313,8 @@ def main():
         # Controls
         st.subheader("🏗️ Site Configuration")
         
-        yard_width = st.number_input("Site Width (M)", min_value=200, max_value=600, value=400, step=10, key="width")
-        yard_length = st.number_input("Site Length (M)", min_value=200, max_value=500, value=300, step=10, key="length")
+        yard_width = st.number_input("Dumpyard Width (M)", min_value=200, max_value=800, value=500, step=20, key="width")
+        yard_length = st.number_input("Dumpyard Length (M)", min_value=200, max_value=600, value=400, step=20, key="length")
         num_trucks = st.number_input("Active CAT Units (25-60)", min_value=25, max_value=60, value=35, step=5, key="trucks")
         
         col_btn1, col_btn2 = st.columns(2)
@@ -326,12 +351,13 @@ def main():
         
         st.caption("🔒 SECURED BY TEAM SILENT HACKER")
         
+        # Legend
         st.markdown("""
         <div class="legend">
-            <div><span style="background:#cc0000; width:12px; height:12px; display:inline-block;"></span> Full Grade</div>
-            <div><span style="background:#0055ff; width:12px; height:12px; display:inline-block;"></span> Filling</div>
-            <div><span style="background:#00cc44; width:12px; height:12px; display:inline-block;"></span> Empty</div>
-            <div><span style="background:#ffcd00; width:12px; height:12px; display:inline-block;"></span> CAT Truck</div>
+            <div><span style="background:#cc0000; width:14px; height:14px; display:inline-block;"></span> Full Grade (&gt;2.4m)</div>
+            <div><span style="background:#0055ff; width:14px; height:14px; display:inline-block;"></span> Filling (0.8-2.4m)</div>
+            <div><span style="background:#00cc44; width:14px; height:14px; display:inline-block;"></span> Empty (&lt;0.8m)</div>
+            <div><span style="background:#ffcd00; width:14px; height:14px; display:inline-block;"></span> CAT Truck</div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -339,13 +365,7 @@ def main():
     
     with col_main:
         if st.session_state.initialized and st.session_state.sim.hexes:
-            # Update simulation - NO auto-refresh, just update on button click
-            if st.button("🔄 UPDATE SIMULATION", use_container_width=True):
-                for _ in range(5):  # Run 5 steps per click for visible movement
-                    st.session_state.sim.update_simulation()
-                st.rerun()
-            
-            # Also update if running (but manual step control for smoothness)
+            # Update simulation
             if st.session_state.sim.is_running:
                 for _ in range(3):
                     st.session_state.sim.update_simulation()
@@ -353,13 +373,11 @@ def main():
             # Create figure
             fig = go.Figure()
             
-            # Add hexagons
+            # Add all hexagons - PERFECTLY PACKED, NO GAPS
             for hex_cell in st.session_state.sim.hexes:
-                cx, cy = hex_cell['x'], hex_cell['y']
-                radius = 10
-                angles = np.linspace(0, 2*np.pi, 7)
-                x_verts = [cx + radius * np.cos(a) for a in angles]
-                y_verts = [cy + radius * np.sin(a) for a in angles]
+                vertices = st.session_state.sim.get_hex_vertices(hex_cell['x'], hex_cell['y'], st.session_state.sim.hex_radius - 1)
+                x_verts = [v[0] for v in vertices]
+                y_verts = [v[1] for v in vertices]
                 
                 color = st.session_state.sim.get_color_for_height(hex_cell['height'])
                 
@@ -369,7 +387,7 @@ def main():
                     mode='lines',
                     fill='toself',
                     fillcolor=color,
-                    line=dict(color='#000', width=1),
+                    line=dict(color='#333333', width=1),
                     showlegend=False,
                     hoverinfo='text',
                     hovertext=f"Zone: {hex_cell['id']}<br>Height: {hex_cell['height']:.2f}m<br>Dumps: {hex_cell['dump_count']}"
@@ -390,46 +408,47 @@ def main():
                     mode='markers+text',
                     marker=dict(
                         symbol='square',
-                        size=24,
+                        size=26,
                         color='#ffcd00',
                         line=dict(color=border_color, width=3)
                     ),
                     text=[truck['id'].split('-')[1]],
-                    textfont=dict(color='#000', size=9, family='Arial Black'),
+                    textfont=dict(color='#000', size=10, family='Arial Black'),
                     textposition='middle center',
                     showlegend=False,
                     hoverinfo='text',
                     hovertext=f"{truck['id']}<br>Status: {truck['status']}<br>Loads: {truck['loads']}"
                 ))
             
-            # Layout
+            # Layout with fixed aspect ratio to maintain hex shape
             fig.update_layout(
                 xaxis=dict(
                     showgrid=False,
                     zeroline=False,
                     fixedrange=True,
-                    showticklabels=False
+                    showticklabels=False,
+                    scaleanchor='y',
+                    scaleratio=1
                 ),
                 yaxis=dict(
                     showgrid=False,
                     zeroline=False,
                     fixedrange=True,
-                    scaleanchor='x',
                     showticklabels=False
                 ),
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
                 margin=dict(l=0, r=0, t=0, b=0),
-                height=650,
+                height=700,
                 dragmode=False
             )
             
             st.plotly_chart(fig, use_container_width=True, config={'staticPlot': False, 'scrollZoom': False})
             
-            # Manual step button for smooth control
+            # Control buttons
             col_step1, col_step2, col_step3 = st.columns(3)
             with col_step2:
-                if st.button("▶️ STEP SIMULATION", use_container_width=True):
+                if st.button("⏩ STEP SIMULATION", use_container_width=True):
                     for _ in range(5):
                         st.session_state.sim.update_simulation()
                     st.rerun()
@@ -448,7 +467,7 @@ def main():
                 st.dataframe(pd.DataFrame(fleet_data), use_container_width=True, hide_index=True)
             
         else:
-            st.info("👈 Configure site settings and click 'BEGIN OPERATIONS' to start")
+            st.info("👈 Configure dumpyard dimensions and click 'BEGIN OPERATIONS' to start")
             
             # Placeholder
             fig = go.Figure()
