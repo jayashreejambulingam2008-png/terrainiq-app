@@ -67,18 +67,18 @@ class Hexagon:
         self.y = y
         self.lane_id = lane_id
         self.col_id = col_id
-        self.height = random.uniform(0, 1.5)
+        self.height = 0.0  # START COMPLETELY EMPTY
         self.locked = False
         self.dump_count = 0
-        self.id = f"H{lane_id}-{col_id}"  # FIXED: Correct f-string syntax
+        self.id = f"H{lane_id}-{col_id}"
 
     def get_color(self):
         if self.height >= 2.4:
-            return '#cc0000'
+            return '#cc0000'  # Full
         elif self.height > 0.8:
-            return '#0055ff'
+            return '#0055ff'  # Filling
         else:
-            return '#00cc44'
+            return '#00cc44'  # Empty
 
 # ============ TRUCK CLASS ============
 class Truck:
@@ -93,8 +93,6 @@ class Truck:
         self.target = None
         self.progress = 0.0
         self.loads = 0
-        self.current_path = []
-        self.path_progress = 0
         self.waypoints = []
 
     def update(self, hexes, stats):
@@ -107,8 +105,7 @@ class Truck:
                 self.target = targets[0]
                 self.target.locked = True
                 self.status = "HAULING"
-                self.progress = 0
-                self.path_progress = 0
+                self.progress = 0.0
                 
                 # Create waypoints for smooth path
                 self.waypoints = [
@@ -119,7 +116,7 @@ class Truck:
                 ]
         
         elif self.status == "HAULING":
-            self.progress += 0.025
+            self.progress += 0.02
             
             if len(self.waypoints) >= 4:
                 if self.progress < 0.33:
@@ -141,18 +138,19 @@ class Truck:
                     self.x = p1[0] + (p2[0] - p1[0]) * t
                     self.y = p1[1] + (p2[1] - p1[1]) * t
             
-            if self.progress >= 1:
+            if self.progress >= 1.0:
+                # Dump material
                 self.target.height = min(2.5, self.target.height + 0.7)
                 self.target.locked = False
                 self.target.dump_count += 1
                 self.status = "RETURNING"
-                self.progress = 0
+                self.progress = 0.0
                 stats['tonnage'] += 400
                 stats['dumps'] += 1
                 self.loads += 1
         
         elif self.status == "RETURNING":
-            self.progress += 0.035
+            self.progress += 0.025
             
             if len(self.waypoints) >= 4:
                 if self.progress < 0.33:
@@ -174,7 +172,7 @@ class Truck:
                     self.x = p1[0] + (p2[0] - p1[0]) * t
                     self.y = p1[1] + (p2[1] - p1[1]) * t
             
-            if self.progress >= 1:
+            if self.progress >= 1.0:
                 self.status = "IDLE"
                 self.x = self.start_x
                 self.y = self.start_y
@@ -194,13 +192,15 @@ def main():
         st.session_state.initialized = False
     if 'sim_active' not in st.session_state:
         st.session_state.sim_active = False
+    if 'frame_count' not in st.session_state:
+        st.session_state.frame_count = 0
     
     # Header
     st.markdown("""
     <div class="cat-header">
         <h1>CATERPILLAR ®</h1>
         <span style="float: right; background: #000; color: #ffcd00; padding: 5px 10px; border-radius: 3px;">
-            RIGHT-SIDE FILLING | LIVE TRUCK MOVEMENTS
+            RIGHT-SIDE FILLING | LIVE TRUCK MOVEMENTS | NO BLINKING
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -258,7 +258,7 @@ def main():
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🚀 START LIVE", type="primary"):
-                # Initialize grid - RIGHT SIDE EMPHASIS
+                # Initialize EMPTY grid - RIGHT SIDE EMPHASIS
                 hex_radius = 15
                 hex_width = math.sqrt(3) * hex_radius
                 vert_spacing = (2 * hex_radius) * 0.75
@@ -268,7 +268,7 @@ def main():
                 
                 hexes = []
                 for r in range(rows):
-                    lane_id = r // (rows // max(1, num_trucks))
+                    lane_id = r // max(1, (rows // max(1, num_trucks)))
                     for c in range(cols):
                         x_off = (hex_width / 2) if r % 2 == 1 else 0
                         x_pos = 280 + c * hex_width + x_off
@@ -288,6 +288,7 @@ def main():
                 st.session_state.stats = {'tonnage': 0, 'dumps': 0}
                 st.session_state.initialized = True
                 st.session_state.sim_active = True
+                st.session_state.frame_count = 0
                 st.rerun()
         
         with col2:
@@ -296,7 +297,7 @@ def main():
                 st.rerun()
         
         if st.button("🔄 RESET ALL"):
-            for key in ['initialized', 'sim_active', 'hexes', 'trucks', 'stats']:
+            for key in ['initialized', 'sim_active', 'hexes', 'trucks', 'stats', 'frame_count']:
                 if key in st.session_state:
                     del st.session_state[key]
             st.rerun()
@@ -330,13 +331,14 @@ def main():
     
     with col_main:
         if st.session_state.initialized:
-            # UPDATE SIMULATION (LIVE)
+            # UPDATE SIMULATION (SMOOTH MOVEMENT)
             if st.session_state.sim_active:
-                for _ in range(2):
+                for i in range(2):  # 2 updates per frame for smooth movement
                     for truck in st.session_state.trucks:
                         truck.update(st.session_state.hexes, st.session_state.stats)
+                st.session_state.frame_count += 1
             
-            # Create map
+            # Create map - SINGLE PLOT, NO BLINKING
             fig = go.Figure()
             
             # Add direction arrow
@@ -349,7 +351,7 @@ def main():
                 bgcolor='rgba(0,0,0,0.7)'
             )
             
-            # Draw all hexagons
+            # Draw all hexagons (COMPLETELY EMPTY TO START)
             for hex_cell in st.session_state.hexes:
                 points = []
                 for i in range(6):
@@ -374,7 +376,7 @@ def main():
                     hovertext=f"Lane {hex_cell.lane_id}<br>Height: {hex_cell.height:.2f}m<br>Dumps: {hex_cell.dump_count}"
                 ))
             
-            # Draw truck paths
+            # Draw truck paths (dotted lines)
             for truck in st.session_state.trucks:
                 if truck.status != "IDLE" and truck.target:
                     fig.add_trace(go.Scatter(
@@ -386,7 +388,7 @@ def main():
                         hoverinfo='none'
                     ))
             
-            # Draw trucks
+            # Draw trucks with status indicators
             for truck in st.session_state.trucks:
                 fig.add_trace(go.Scatter(
                     x=[truck.x], y=[truck.y],
@@ -405,7 +407,7 @@ def main():
                     hovertext=f"<b>{truck.id}</b><br>Status: {truck.status}<br>Loads: {truck.loads}<br>Lane: {truck.lane_id}"
                 ))
             
-            # Layout
+            # Layout - FIXED SCALE, NO MOVEMENT
             fig.update_layout(
                 xaxis=dict(
                     showgrid=False, zeroline=False,
@@ -425,6 +427,7 @@ def main():
                 dragmode=False
             )
             
+            # Display map - REUSING SAME FIGURE, NO BLINKING
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
             
             # Fleet table
@@ -447,7 +450,7 @@ def main():
                         'STATUS': status_display,
                         'LOADS': truck.loads,
                         'LANE': truck.lane_id,
-                        'TARGET': target_info
+                        'TARGET X': target_info
                     })
                 st.dataframe(pd.DataFrame(fleet_data), use_container_width=True, hide_index=True)
             
@@ -461,11 +464,11 @@ def main():
             with col_info3:
                 st.metric("Live Trucks", f"{len([t for t in st.session_state.trucks if t.status != 'IDLE'])}")
             
-            st.caption(f"🔄 LIVE UPDATES | Trucks targeting RIGHTMOST empty hexes | Last Sync: {datetime.now().strftime('%H:%M:%S')}")
+            st.caption(f"🔄 LIVE UPDATES | Frame: {st.session_state.frame_count} | Trucks targeting RIGHTMOST empty hexes | Last Sync: {datetime.now().strftime('%H:%M:%S')}")
             
-            # AUTO-REFRESH
+            # AUTO-REFRESH (SMOOTH, NO BLINKING)
             if st.session_state.sim_active:
-                time.sleep(0.25)
+                time.sleep(0.15)  # FASTER = SMOOTHER MOVEMENT
                 st.rerun()
                 
         else:
@@ -474,6 +477,7 @@ def main():
             <div style="text-align: center; padding: 50px; background: #1a1a1a; border-radius: 10px;">
                 <h2 style="color: #ffcd00;">🚛 CAT AUTONOMOUS COMMAND</h2>
                 <p style="color: #fff;">RIGHT-SIDE FILLING SYSTEM</p>
+                <p style="color: #00cc44;">⬅️ DUMPYARD STARTS COMPLETELY EMPTY ⬅️</p>
                 <p style="color: #888;">Trucks will fill from the RIGHT side first, moving left as right side fills up</p>
                 <p style="color: #ffcd00;">⬅️ FILLING DIRECTION: RIGHT → LEFT ⬅️</p>
             </div>
