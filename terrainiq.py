@@ -8,6 +8,7 @@ import time
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CAT Autonomous Command", layout="wide", page_icon="🚛")
 
+# --- CSS ---
 st.markdown("""
 <style>
     .stApp { background: linear-gradient(135deg, #1a1a1a 0%, #000000 100%); }
@@ -115,8 +116,8 @@ def main():
                         truck.update(st.session_state.hexes, st.session_state.trucks, st.session_state.stats)
                 
                 fig = create_map_figure(st.session_state.hexes, st.session_state.trucks)
-                # Using static image rendering to stop the blinking
-                st.image(fig.to_image(format="png", width=1000, height=680), use_container_width=True)
+                # Using st.plotly_chart with a key is the stable way to render
+                st.plotly_chart(fig, use_container_width=True, key="cat_map_chart", config={'displayModeBar': False})
             
             live_view()
         else:
