@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import random
 import math
-import time
 from datetime import datetime
 
 st.set_page_config(page_title="CAT Autonomous Command", layout="wide", page_icon="🚛")
@@ -57,6 +56,10 @@ st.markdown("""
         font-weight: bold;
         width: 100%;
     }
+    .stPlotlyChart {
+        background: radial-gradient(circle, #222 0%, #000 100%);
+        border-radius: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -80,7 +83,7 @@ class Hexagon:
         else:
             return '#00cc44'
 
-# ============ TRUCK CLASS WITH COLLISION AVOIDANCE ============
+# ============ TRUCK CLASS ============
 class Truck:
     def __init__(self, truck_id, start_x, start_y, lane_id):
         self.id = f"CAT-{truck_id:03d}"
@@ -94,39 +97,9 @@ class Truck:
         self.progress = 0.0
         self.loads = 0
         self.waypoints = []
-        self.waiting = False
-        self.wait_timer = 0
-        self.turning_radius = 25  # Safe turning radius in pixels
 
-    def check_collision(self, other_trucks):
-        """Check if this truck is too close to another truck"""
-        for other in other_trucks:
-            if other == self or other.status == "IDLE":
-                continue
-            
-            # Calculate distance between trucks
-            distance = math.sqrt((self.x - other.x)**2 + (self.y - other.y)**2)
-            
-            # If too close (within 30 pixels), return True
-            if distance < 35:
-                return True
-        return False
-
-    def update(self, hexes, all_trucks, stats):
-        # Check for collisions before moving
-        if self.check_collision(all_trucks):
-            self.waiting = True
-            self.wait_timer += 1
-            if self.wait_timer > 10:  # Wait for 10 frames then try again
-                self.waiting = False
-                self.wait_timer = 0
-            return  # Don't move this frame
-        
-        self.waiting = False
-        self.wait_timer = 0
-        
+    def update(self, hexes, stats):
         if self.status == "IDLE":
-            # Find RIGHT-MOST available hex in assigned lane
             targets = [h for h in hexes if h.lane_id == self.lane_id and not h.locked and h.height < 2.4]
             if targets:
                 targets.sort(key=lambda h: h.x, reverse=True)
@@ -135,61 +108,14 @@ class Truck:
                 self.status = "HAULING"
                 self.progress = 0.0
                 
-                # Create waypoints with safe turning arcs
-                # Wide turning path to avoid other trucks
-                turn_radius = self.turning_radius
-                
                 self.waypoints = [
-                    (self.start_x, self.start_y),                           # Start
-                    (self.start_x, self.target.y - 15),                    # Vertical move with buffer
-                    (self.target.x - turn_radius, self.target.y - 15),    # Approach with wide turn
-                    (self.target.x, self.target.y)                         # Target
+                    (self.start_x, self.start_y),
+                    (self.start_x, self.target.y),
+                    (self.target.x - 20, self.target.y),
+                    (self.target.x, self.target.y)
                 ]
         
         elif self.status == "HAULING":
-            self.progress += 0.02
-            
-            if len(self.waypoints) >= 4:
-                if self.progress < 0.33:
-                    t = self.progress / 0.33
-                    p1 = self.waypoints[0]
-                    p2 = self.waypoints[1]
-                    self.x = p1[0] + (p2[0] - p1[0]) * t
-                    self.y = p1[1] + (p2[1] - p1[1]) * t
-                elif self.progress < 0.66:
-                    t = (self.progress - 0.33) / 0.33
-                    p1 = self.waypoints[1]
-                    p2 = self.waypoints[2]
-                    self.x = p1[0] + (p2[0] - p1[0]) * t
-                    self.y = p1[1] + (p2[1] - p1[1]) * t
-                else:
-                    t = (self.progress - 0.66) / 0.34
-                    p1 = self.waypoints[2]
-                    p2 = self.waypoints[3]
-                    self.x = p1[0] + (p2[0] - p1[0]) * t
-                    self.y = p1[1] + (p2[1] - p1[1]) * t
-            
-            if self.progress >= 1.0:
-                # Dump material
-                self.target.height = min(2.5, self.target.height + 0.6)
-                self.target.locked = False
-                self.target.dump_count += 1
-                self.status = "RETURNING"
-                self.progress = 0.0
-                stats['tonnage'] += 400
-                stats['dumps'] += 1
-                self.loads += 1
-                
-                # Create safe return path with wide turn
-                turn_radius = self.turning_radius
-                self.waypoints = [
-                    (self.target.x, self.target.y),                         # Start at target
-                    (self.target.x - turn_radius, self.target.y),          # Wide turn back
-                    (self.start_x, self.target.y),                         # Vertical alignment
-                    (self.start_x, self.start_y)                           # Return to start
-                ]
-        
-        elif self.status == "RETURNING":
             self.progress += 0.025
             
             if len(self.waypoints) >= 4:
@@ -213,22 +139,53 @@ class Truck:
                     self.y = p1[1] + (p2[1] - p1[1]) * t
             
             if self.progress >= 1.0:
+                self.target.height = min(2.5, self.target.height + 0.6)
+                self.target.locked = False
+                self.target.dump_count += 1
+                self.status = "RETURNING"
+                self.progress = 0.0
+                stats['tonnage'] += 400
+                stats['dumps'] += 1
+                self.loads += 1
+        
+        elif self.status == "RETURNING":
+            self.progress += 0.03
+            
+            if len(self.waypoints) >= 4:
+                if self.progress < 0.33:
+                    t = self.progress / 0.33
+                    p1 = self.waypoints[3]
+                    p2 = self.waypoints[2]
+                    self.x = p1[0] + (p2[0] - p1[0]) * t
+                    self.y = p1[1] + (p2[1] - p1[1]) * t
+                elif self.progress < 0.66:
+                    t = (self.progress - 0.33) / 0.33
+                    p1 = self.waypoints[2]
+                    p2 = self.waypoints[1]
+                    self.x = p1[0] + (p2[0] - p1[0]) * t
+                    self.y = p1[1] + (p2[1] - p1[1]) * t
+                else:
+                    t = (self.progress - 0.66) / 0.34
+                    p1 = self.waypoints[1]
+                    p2 = self.waypoints[0]
+                    self.x = p1[0] + (p2[0] - p1[0]) * t
+                    self.y = p1[1] + (p2[1] - p1[1]) * t
+            
+            if self.progress >= 1.0:
                 self.status = "IDLE"
                 self.x = self.start_x
                 self.y = self.start_y
                 self.target = None
 
     def get_status_color(self):
-        if self.waiting:
-            return '#ff6600'  # Orange for waiting
-        elif self.status == "HAULING":
+        if self.status == "HAULING":
             return '#00ff00'
         elif self.status == "RETURNING":
             return '#ffcd00'
         return '#555555'
 
-# ============ CREATE MAP FIGURE ============
-def create_map_figure(hexes, trucks):
+# ============ CREATE MAP FUNCTION ============
+def create_figure(hexes, trucks, stats):
     fig = go.Figure()
     
     # Add direction arrow
@@ -266,7 +223,7 @@ def create_map_figure(hexes, trucks):
             hovertext=f"Lane {hex_cell.lane_id}<br>Height: {hex_cell.height:.2f}m<br>Dumps: {hex_cell.dump_count}"
         ))
     
-    # Draw truck paths (dotted lines)
+    # Draw truck paths
     for truck in trucks:
         if truck.status != "IDLE" and truck.target and truck.waypoints:
             fig.add_trace(go.Scatter(
@@ -278,25 +235,8 @@ def create_map_figure(hexes, trucks):
                 hoverinfo='none'
             ))
     
-    # Draw trucks with status indicators
+    # Draw trucks
     for truck in trucks:
-        # Status color for border
-        border_color = truck.get_status_color()
-        
-        # Add shadow/glow for better visibility
-        fig.add_trace(go.Scatter(
-            x=[truck.x], y=[truck.y],
-            mode='markers',
-            marker=dict(
-                symbol='square',
-                size=32,
-                color='rgba(255,205,0,0.2)',
-                line=dict(color=border_color, width=2)
-            ),
-            showlegend=False
-        ))
-        
-        # Main truck
         fig.add_trace(go.Scatter(
             x=[truck.x], y=[truck.y],
             mode='markers+text',
@@ -304,14 +244,14 @@ def create_map_figure(hexes, trucks):
                 symbol='square',
                 size=28,
                 color='#ffcd00',
-                line=dict(color=border_color, width=3)
+                line=dict(color=truck.get_status_color(), width=3)
             ),
             text=[truck.id.split('-')[1]],
             textfont=dict(color='#000', size=10, family='Arial Black'),
             textposition='middle center',
             showlegend=False,
             hoverinfo='text',
-            hovertext=f"<b>{truck.id}</b><br>Status: {truck.status}{' (WAITING)' if truck.waiting else ''}<br>Loads: {truck.loads}<br>Lane: {truck.lane_id}"
+            hovertext=f"<b>{truck.id}</b><br>Status: {truck.status}<br>Loads: {truck.loads}<br>Lane: {truck.lane_id}"
         ))
     
     # Layout
@@ -343,13 +283,19 @@ def main():
         st.session_state.initialized = False
     if 'sim_active' not in st.session_state:
         st.session_state.sim_active = False
+    if 'hexes' not in st.session_state:
+        st.session_state.hexes = []
+    if 'trucks' not in st.session_state:
+        st.session_state.trucks = []
+    if 'stats' not in st.session_state:
+        st.session_state.stats = {'tonnage': 0, 'dumps': 0}
     
     # Header
     st.markdown("""
     <div class="cat-header">
         <h1>CATERPILLAR ®</h1>
         <span style="float: right; background: #000; color: #ffcd00; padding: 5px 10px; border-radius: 3px;">
-            SAFE TURNING | COLLISION AVOIDANCE | RIGHT-SIDE FILLING
+            RIGHT-SIDE FILLING | REAL-TIME UPDATES
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -361,7 +307,7 @@ def main():
         
         # Status
         if st.session_state.initialized and st.session_state.sim_active:
-            status_text = "🔥 COLLISION AVOIDANCE ACTIVE"
+            status_text = "🔥 RIGHT-SIDE FILLING ACTIVE"
             status_color = "#00cc44"
         elif st.session_state.initialized:
             status_text = "⏸️ PAUSED"
@@ -378,20 +324,18 @@ def main():
         """, unsafe_allow_html=True)
         
         # Tonnage
-        tonnage = st.session_state.get('stats', {}).get('tonnage', 0)
         st.markdown(f"""
         <div class="stat-box">
             <div class="stat-label">MATERIAL MOVED (TONS)</div>
-            <div class="stat-value">{tonnage:,}</div>
+            <div class="stat-value">{st.session_state.stats['tonnage']:,}</div>
         </div>
         """, unsafe_allow_html=True)
         
         # Dumps
-        dumps = st.session_state.get('stats', {}).get('dumps', 0)
         st.markdown(f"""
         <div class="stat-box">
             <div class="stat-label">TOTAL DUMPS</div>
-            <div class="stat-value">{dumps}</div>
+            <div class="stat-value">{st.session_state.stats['dumps']}</div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -424,13 +368,12 @@ def main():
                         col_from_right = cols - c
                         hexes.append(Hexagon(x_pos, 80 + r * vert_spacing, lane_id, col_from_right))
                 
-                # Create trucks with staggered start positions
+                # Create trucks
                 trucks = []
                 for i in range(num_trucks):
                     lane_hexes = [h for h in hexes if h.lane_id == i]
                     if lane_hexes:
                         avg_y = sum(h.y for h in lane_hexes) / len(lane_hexes)
-                        # Stagger start positions to avoid initial collision
                         start_y = avg_y + (i * 5) - (num_trucks * 2.5)
                         trucks.append(Truck(i + 1, 250, start_y, i))
                 
@@ -461,9 +404,8 @@ def main():
             st.caption(f"📊 SITE FILL: {filled}/{total} ({progress:.1f}%)")
             
             active = len([t for t in st.session_state.trucks if t.status != "IDLE"])
-            waiting = len([t for t in st.session_state.trucks if t.waiting])
-            st.caption(f"🚛 ACTIVE TRUCKS: {active} | ⏳ WAITING: {waiting}")
-            st.info("✅ Safe turning enabled | Collision avoidance active")
+            st.caption(f"🚛 ACTIVE TRUCKS: {active}/{len(st.session_state.trucks)}")
+            st.info("⬅️ Filling from RIGHT side")
         
         st.markdown("""
         <div style="margin-top: 20px;">
@@ -472,8 +414,6 @@ def main():
             <div><span style="background:#0055ff; width:12px; height:12px; display:inline-block;"></span> Filling</div>
             <div><span style="background:#00cc44; width:12px; height:12px; display:inline-block;"></span> Empty</div>
             <div><span style="background:#ffcd00; width:12px; height:12px; display:inline-block;"></span> CAT Truck</div>
-            <div><span style="background:#ff6600; width:12px; height:12px; display:inline-block;"></span> Waiting/Safe Turn</div>
-            <div><span style="background:transparent; border:1px dashed #ffcd00; width:12px; height:12px; display:inline-block;"></span> Planned Route</div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -481,19 +421,17 @@ def main():
     
     with col_main:
         if st.session_state.initialized:
-            # UPDATE SIMULATION WITH COLLISION AVOIDANCE
+            # UPDATE SIMULATION
             if st.session_state.sim_active:
                 for _ in range(2):
-                    # Pass all trucks to each truck for collision detection
                     for truck in st.session_state.trucks:
-                        truck.update(st.session_state.hexes, st.session_state.trucks, st.session_state.stats)
+                        truck.update(st.session_state.hexes, st.session_state.stats)
             
-            # CREATE AND DISPLAY MAP
-            fig = create_map_figure(st.session_state.hexes, st.session_state.trucks)
-            plot_placeholder = st.empty()
-            plot_placeholder.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            # CREATE AND DISPLAY MAP - THIS UPDATES SMOOTHLY
+            fig = create_figure(st.session_state.hexes, st.session_state.trucks, st.session_state.stats)
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
             
-            # Fleet table with waiting status
+            # Fleet table
             with st.expander("📋 LIVE FLEET STATUS", expanded=False):
                 fleet_data = []
                 for truck in st.session_state.trucks:
@@ -501,8 +439,6 @@ def main():
                         status_display = '🟡 HAULING → RIGHT'
                     elif truck.status == 'RETURNING':
                         status_display = '🟢 RETURNING'
-                    elif truck.waiting:
-                        status_display = '🟠 WAITING (Safe Turn)'
                     else:
                         status_display = '⚪ IDLE'
                     
@@ -520,33 +456,29 @@ def main():
                 st.dataframe(pd.DataFrame(fleet_data), use_container_width=True, hide_index=True)
             
             # Real-time info
-            col_info1, col_info2, col_info3, col_info4 = st.columns(4)
+            col_info1, col_info2, col_info3 = st.columns(3)
             with col_info1:
-                st.metric("Filling Direction", "⬅️ RIGHT TO LEFT", delta="Rightmost first")
+                st.metric("Filling Direction", "⬅️ RIGHT TO LEFT")
             with col_info2:
                 rightmost_empty = len([h for h in st.session_state.hexes if h.height < 2.4 and h.x > 700])
                 st.metric("Right Zone Empty", f"{rightmost_empty}")
             with col_info3:
                 st.metric("Live Trucks", f"{len([t for t in st.session_state.trucks if t.status != 'IDLE'])}")
-            with col_info4:
-                st.metric("Safe Turns", f"{len([t for t in st.session_state.trucks if t.waiting])}")
             
-            st.caption(f"🔄 LIVE UPDATES | Safe turning radius: 25px | Collision avoidance distance: 35px")
-            
-            # AUTO-UPDATE
-            if st.session_state.sim_active:
-                time.sleep(0.15)
+            # MANUAL REFRESH BUTTON - NO AUTO REFRESH = NO BLINKING
+            if st.button("🔄 REFRESH VIEW", use_container_width=True):
                 st.rerun()
-                
+            
+            st.caption("💡 Click REFRESH to update view | Auto-refresh disabled to prevent blinking")
+            
         else:
             st.info("👈 CONFIGURE SETTINGS & CLICK 'START LIVE'")
             st.markdown("""
             <div style="text-align: center; padding: 50px; background: #1a1a1a; border-radius: 10px;">
                 <h2 style="color: #ffcd00;">🚛 CAT AUTONOMOUS COMMAND</h2>
-                <p style="color: #fff;">SAFE TURNING | COLLISION AVOIDANCE SYSTEM</p>
+                <p style="color: #fff;">RIGHT-SIDE FILLING SYSTEM</p>
                 <p style="color: #00cc44;">⬅️ DUMPYARD STARTS COMPLETELY EMPTY ⬅️</p>
-                <p style="color: #888;">Trucks fill from RIGHT side | Wide turning arcs | Automatic collision prevention</p>
-                <p style="color: #ffcd00;">⬅️ FILLING DIRECTION: RIGHT → LEFT ⬅️</p>
+                <p style="color: #888;">Click START LIVE to begin</p>
             </div>
             """, unsafe_allow_html=True)
 
